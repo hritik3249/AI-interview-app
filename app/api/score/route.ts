@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
-
-const client = new Anthropic()
+import { GoogleGenerativeAI } from '@google/generative-ai'
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,7 +9,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
     }
 
-    const system = `You are a strict but fair ${airline} airline recruiter (${difficulty} difficulty) evaluating a female cabin crew candidate's spoken interview answer.
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+
+    const prompt = `You are a strict but fair ${airline} airline recruiter (${difficulty} difficulty) evaluating a female cabin crew candidate's spoken interview answer.
 
 Question asked: "${question}"
 Category: ${category}
@@ -37,14 +38,8 @@ Respond ONLY in this exact JSON format (no markdown, no preamble, no extra text)
   "recruiter_reaction": "<1 sentence — blunt honest recruiter thought>"
 }`
 
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 600,
-      system,
-      messages: [{ role: 'user', content: transcript }],
-    })
-
-    const raw = (message.content[0] as { type: string; text: string }).text
+    const result = await model.generateContent(prompt)
+    const raw = result.response.text()
     const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
 
     return NextResponse.json(parsed)
