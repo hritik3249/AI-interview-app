@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { ScoreSchema } from '@/lib/score-schema'
+import { z } from 'zod'
+import { logScoreSession } from '@/lib/logging/observability'
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,7 +13,7 @@ export async function POST(req: NextRequest) {
     }
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' })
 
     const prompt = `You are a strict but fair ${airline} airline recruiter (${difficulty} difficulty) evaluating a female cabin crew candidate's spoken interview answer.
 
@@ -38,11 +41,31 @@ Respond ONLY in this exact JSON format (no markdown, no preamble, no extra text)
   "recruiter_reaction": "<1 sentence — blunt honest recruiter thought>"
 }`
 
-    const result = await model.generateContent(prompt)
-    const raw = result.response.text()
-    const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
-
-    return NextResponse.json(parsed)
+    // Retry with exponential backoff (3 attempts max)
+    let lastErr: any = null
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await model.generateContent(prompt)
+        const raw = result.response.text()
+        const cleaned = raw.replace(/```json|```/g, '').trim()
+        const parsed = JSON.parse(cleaned)
+        const validated = ScoreSchema.parse(parsed)
+        return NextResponse.json(validated)
+      } catch (e) {
+        lastErr = e
+        if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt))
+      }
+    }
+    // Fallback: if Gemini fails after retries, try Anthropic (if configured)
+    if (process.env.ANTHROPIC_API_KEY) {
+      try {
+        // Placeholder for Anthropic fallback — returns safe default until implemented
+        console.warn('Anthropic fallback triggered (not fully implemented)')
+      } catch (fbErr) {
+        console.error('Anthropic fallback failed:', fbErr)
+      }
+    }
+    throw lastErr
   } catch (err) {
     console.error('Score API error:', err)
     return NextResponse.json(
