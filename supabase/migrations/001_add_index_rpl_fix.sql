@@ -1,0 +1,1 @@
+-- Migration: add composite index and tighten RLS (placeholder)

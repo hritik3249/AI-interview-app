@@ -18,4 +18,9 @@ export function logScoreSession(entry: Omit<LogEntry, 'timestamp'>) {
   return full
 }
 
-export function getLogs() { return [...logs] }
+export async function persistLogToDB(entry: LogEntry) {
+  // Placeholder: persist to Supabase interview_sessions or external DB
+  // In production, insert into `interview_sessions` with correlation_id = entry.sessionId
+  console.log('[PERSIST]', entry.sessionId, entry.latencyMs, entry.model)
+  return true
+}

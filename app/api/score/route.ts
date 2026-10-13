@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { ScoreSchema } from '@/lib/score-schema'
 import { z } from 'zod'
+import Anthropic from '@anthropic-ai/sdk'
 import { logScoreSession } from '@/lib/logging/observability'
+
+import { sanitizeAnswer, isRateLimited } from '@/lib/guardrails/sanitizer'
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +15,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
     }
 
+    // Security: sanitize input and enforce rate limit
+    const cleanTranscript = sanitizeAnswer(transcript)
+    if (cleanTranscript.length === 0) {
+      return NextResponse.json({ error: 'Transcript empty after sanitization' }, { status: 400 })
+    }
+    if (isRateLimited(req.headers.get('x-forwarded-for') || 'anonymous')) {
+      return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 })
+    }
+
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' })
 
@@ -19,7 +31,7 @@ export async function POST(req: NextRequest) {
 
 Question asked: "${question}"
 Category: ${category}
-Candidate's spoken answer: "${transcript}"
+Candidate's spoken answer: "${cleanTranscript}"
 
 Score honestly from 0-100 on each dimension. Be realistic — most candidates score 40-75. Only exceptional answers get 85+.
 
@@ -56,11 +68,22 @@ Respond ONLY in this exact JSON format (no markdown, no preamble, no extra text)
         if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt))
       }
     }
-    // Fallback: if Gemini fails after retries, try Anthropic (if configured)
+    // Fallback: Anthropic Claude 3.5 Sonnet if Gemini fails
     if (process.env.ANTHROPIC_API_KEY) {
       try {
-        // Placeholder for Anthropic fallback — returns safe default until implemented
-        console.warn('Anthropic fallback triggered (not fully implemented)')
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+        const msg = await anthropic.messages.create({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 1024,
+          system: 'You are a strict airline recruiter. Respond only with valid JSON matching the score schema.',
+          messages: [{ role: 'user', content: prompt }]
+        })
+        const raw = msg.content[0].type === 'text' ? msg.content[0].text : ''
+        const cleaned = raw.replace(/```json|```/g, '').trim()
+        const parsed = JSON.parse(cleaned)
+        const validated = ScoreSchema.parse(parsed)
+        logScoreSession({ sessionId: req.headers.get('x-session-id') || 'anon', latencyMs: 0, model: 'claude-3-5-sonnet', error: undefined })
+        return NextResponse.json(validated)
       } catch (fbErr) {
         console.error('Anthropic fallback failed:', fbErr)
       }
